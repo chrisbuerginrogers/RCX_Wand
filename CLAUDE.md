@@ -461,10 +461,9 @@ Superseded — see the next section.
 
 # 2026-08-12: what was actually wrong
 
-A full 23904-byte download ran start to finish, every logged block acked
-`B2 00` (ContinueDL, status 0 = OK), and `UnlockFirmware` came back with
-LEGO's easter-egg string — which the ROM only sends *if valid firmware
-has been downloaded*:
+A full 23904-byte download ran start to finish and `UnlockFirmware` came
+back with LEGO's easter-egg string — which the ROM only sends *if valid
+firmware has been downloaded*:
 
 ```
 4a 75 73 74 20 61 20 62 69 74 20 6f 66 66 20 74 68 65 20 62 6c 6f 63 6b 21
@@ -476,6 +475,56 @@ The RCX then answered `ping` and reported 8.456 V of battery.
 Five separate bugs were in the way, and *none* of them was the packet
 sequence — that had been correct all along, exactly as the 2026-08-11
 notes suspected.
+
+**Read the next section before drawing conclusions from that success:
+the run was blind, and did not depend on acks at all.**
+
+## 0. Why the download worked but `poll` never did
+
+Worth getting straight, because it is easy to misread the win above as
+"the ack path works now". It does not follow.
+
+**The successful download was blind.** It was `dl.py`, which fired every
+packet fire-and-forget and merely *logged* any ack it happened to
+decode. Its own summary line reads `all 23904 bytes sent in 294s, 60
+acks seen` — 60 across 121 packets. It completed because **transmit
+works**, not because replies came back. That is exactly why `--blind`
+is a viable workaround today.
+
+**The "half" was the toggle bug, not marginal signal.** Consecutive
+`0x45` chunks alternate `0x45`/`0x4D`, so replies alternated
+`0xB2`/`0xBA`, and matching the exact byte instead of masking `0x08`
+discarded every other one. 60/120 is exactly that.
+
+**Reply length really does decide survival odds.** The sync never
+survives the preamble (see §4), so what must arrive *completely intact*
+is the byte/complement run from opcode to checksum. One bad byte
+anywhere fails the complement check or the checksum and kills the whole
+packet:
+
+| Reply | Payload | Bytes that must survive |
+|---|---|---|
+| `ping` -> `E7` | 1 | 4 |
+| `ContinueDL` -> `B2 00` | 2 | 6 |
+| `poll` -> `E5 lo hi` | 3 | **8** |
+| `pollb` -> `C7 lo hi` | 3 | **8** |
+
+At the best rate ever measured here (ping 8/10, so ~94.6% per byte)
+that predicts ~71% for block acks but only ~63% for `poll`. Short
+replies survive a marginal link markedly better than long ones.
+
+**But length is the secondary reason.** That maths predicts `poll` at
+~60%; it was observed at **0%**. The dominant factor is that the
+receiver degraded *between* the two experiments — with identical code,
+ping went 8/10 -> 2/10 -> 0/10 across the session while the idle line
+went from 0 transitions/second to 300-1700. The download happened while
+the receiver was still healthy; every `poll` attempt happened after it
+started failing.
+
+So the ordering is the answer: **downloads early and blind, reads late
+and degraded.** Delivery was never the problem in either case — the
+`set` commands never acked either, yet visibly took effect (the RCX's
+clock reset when `nWatchFormat` landed). Only the return path failed.
 
 ## 1. The IR receiver had no power (this was the whole ballgame)
 
