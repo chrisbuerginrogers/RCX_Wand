@@ -20,3 +20,6 @@ env/
 
 # Env/secrets
 .env
+
+__pycache__/
+*.pyc

@@ -1,9 +1,0 @@
-// Same idea as 02_tune, but wrapped in a loop with a label and jmp --
-// this one never ends on its own. Send a new program (or "stop", once
-// there's a way to send a bare direct command) to make it quit.
-task 0
-top:
-plays 2
-wait 2,50
-jmp top
-endt

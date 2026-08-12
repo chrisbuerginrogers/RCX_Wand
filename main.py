@@ -2,24 +2,24 @@
 button (BtnA) stops the current one and comes back here.
   >>> Runs ON the M5StickS3. Install it as main.py. <<<
   Needs on the Stick: m5/, stick_menu.py, stick_ui.py, lego_card.py,
-  rcx.py, cardID.py, flash_rcx.py, rcx_driver.py, rcx_firmware_data.py.
+  RCXWand.py, cardID.py.
 
-Three programs, cycled through with one button:
+Two programs, cycled through with one button:
 
-    DRIVE RCX   rcx.py         tap a card, find its Controller, drive
+    DRIVE RCX   RCXWand.py     tap a card, find its Controller, drive
                                an RCX's motors A and C over IR
     CARD ID     cardID.py      tap cards, log their FD02 broadcast
-    FLASH RCX   flash_rcx.py   flash real RCX firmware over IR
+
+Flashing firmware is deliberately NOT here any more. It takes about
+five minutes, replaces everything on the brick, and needs a LASM
+compiler that only runs on a Mac -- so it is a Mac-side act now:
+`python3 load_firmware_on_rcx.py`, with the Stick plugged in over USB.
 
 At the idle "READY" screen, BtnB starts whichever name is showing.
 Once something is running, BtnB stops it and starts the *next* one
 immediately - no idle screen in between, since that is what "toggle"
-(now really "cycle", with three) means. BtnA always stops back to the
-idle screen instead, showing whichever program you were just on.
-flash_rcx.py is the one exception: it doesn't hand back a 'toggle', on
-purpose (see its own docstring) - BtnB inside it means something else
-entirely (arm/confirm the flash), so from there BtnA is the only way
-out, same as everywhere else, just without the BtnB shortcut.
+means. BtnA always stops back to the idle screen instead, showing
+whichever program you were just on.
 
 Each program is its own file with its own main(buttons=None) - see
 stick_menu.py for the Stop/Toggle convention they use to hand control
@@ -27,14 +27,9 @@ back here. Nothing about what any program *does* changed to make this
 work; only how each one stops.
 
 gc.collect() between programs is defensive, not confirmed necessary:
-rcx.py and flash_rcx.py each construct their own RCX object on the
-same IR pins (rcx_ir.RCX vs rcx_driver.RCX - two independent
-implementations of the same protocol, see rcx_ir.py's docstring for
-why they're not the same class), and neither explicitly releases the
-RMT channel it claims. Repeatedly constructing rcx_ir.RCX() alone,
-back to back, was tested live without error; cycling between the two
-*different* RCX classes on the same pins within one continuously
-running process has not been.
+RCXWand.py constructs an rcx_ir.RCX on the IR pins and never explicitly
+releases the RMT channel it claims. Repeatedly constructing
+rcx_ir.RCX() back to back was tested live without error.
 """
 
 import gc
@@ -44,14 +39,12 @@ import stick_menu
 import stick_ui
 from m5.m5_buttons import Buttons
 
-import rcx
+import RCXWand
 import cardID
-import flash_rcx
 
 PROGRAMS = (
-    ('DRIVE RCX', rcx.main),
+    ('DRIVE RCX', RCXWand.main),
     ('CARD ID', cardID.main),
-    ('FLASH RCX', flash_rcx.main),
 )
 
 

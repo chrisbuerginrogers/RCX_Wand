@@ -746,6 +746,13 @@ class _Block:
     kind: str            # "task" or "sub"
     number: int
     body: list = field(default_factory=list)   # list[_PendingCmd]
+    # name -> byte offset within this block's body. Per-block, not
+    # global: real LASM reuses the same label names in every task (a
+    # compiler-generated `Label0` / `Label1002` per program is the
+    # normal shape -- see default_codes.lasm), so a single flat table
+    # lets a later task's definition silently win and every earlier
+    # jump then resolves to "not in the same task/sub as the jump".
+    labels: dict = field(default_factory=dict)
 
 
 def _placeholder_args(args):
@@ -786,8 +793,13 @@ def compile_lasm(lines, chunk_size=20, nxt_compatible=True):
     commands = []       # list[Command], the final output
     blocks = []          # list[_Block], in compile order
     cur_block = None       # _Block or None (=> top-level/direct)
-    direct_pending = []     # list[_PendingCmd]
-    labels = {}               # name -> (block, byte_offset)
+    # ("direct", _PendingCmd) / ("block", _Block) in *source* order.
+    # Order matters and cannot be "all directs, then all blocks": a
+    # multi-program listing selects a slot with `prgm N` and then
+    # downloads that slot's tasks, over and over (see
+    # default_codes.lasm). Emitting every prgm first would leave the
+    # last one selected and drop all six tasks into that one slot.
+    emit_order = []
     offset = 0                 # running byte offset within cur_block's body
 
     for line_no, raw in enumerate(lines, 1):
@@ -799,7 +811,10 @@ def compile_lasm(lines, chunk_size=20, nxt_compatible=True):
             if cur_block is None:
                 raise LasmError(f"line {line_no}: label {parsed[1]!r} outside "
                                  f"any task/sub -- labels only make sense inside one")
-            labels[parsed[1]] = (cur_block, offset)
+            if parsed[1] in cur_block.labels:
+                raise LasmError(f"line {line_no}: duplicate label {parsed[1]!r} "
+                                 f"in {cur_block.kind} {cur_block.number}")
+            cur_block.labels[parsed[1]] = offset
             continue
 
         _, mnemonic, args = parsed
@@ -810,6 +825,7 @@ def compile_lasm(lines, chunk_size=20, nxt_compatible=True):
                                  f"inside {cur_block.kind} {cur_block.number}")
             cur_block = _Block(kind="task", number=args[0])
             blocks.append(cur_block)
+            emit_order.append(("block", cur_block))
             offset = 0
             continue
         if mnemonic == "sub":
@@ -818,6 +834,7 @@ def compile_lasm(lines, chunk_size=20, nxt_compatible=True):
                                  f"inside {cur_block.kind} {cur_block.number}")
             cur_block = _Block(kind="sub", number=args[0])
             blocks.append(cur_block)
+            emit_order.append(("block", cur_block))
             offset = 0
             continue
         if mnemonic == "endt":
@@ -850,7 +867,7 @@ def compile_lasm(lines, chunk_size=20, nxt_compatible=True):
             if cmd.jump_arg_index != -1:
                 raise LasmError(f"line {line_no}: {mnemonic!r} references a label "
                                  f"but is outside any task/sub")
-            direct_pending.append(cmd)
+            emit_order.append(("direct", cmd))
 
     if cur_block is not None:
         raise LasmError(f"unterminated {cur_block.kind} {cur_block.number} "
@@ -864,22 +881,26 @@ def compile_lasm(lines, chunk_size=20, nxt_compatible=True):
                 continue
             idx = cmd.jump_arg_index
             name = cmd.args[idx]
-            if name not in labels:
-                raise LasmError(f"line {cmd.line_no}: undefined label {name!r}")
-            label_block, label_offset = labels[name]
-            if label_block is not block:
+            if name not in block.labels:
                 raise LasmError(
-                    f"line {cmd.line_no}: label {name!r} isn't in the same "
-                    f"task/sub as the jump referencing it")
-            cmd.args[idx] = label_offset - (cmd.offset + cmd.length)
+                    f"line {cmd.line_no}: undefined label {name!r} in "
+                    f"{block.kind} {block.number} (labels are scoped to the "
+                    f"task/sub they appear in)")
+            cmd.args[idx] = block.labels[name] - (cmd.offset + cmd.length)
 
-    # Emit direct (top-level) commands as-is.
-    for cmd in direct_pending:
-        opcode, params = assemble_line(cmd.mnemonic, cmd.args, nxt_compatible)
-        commands.append(Command(opcode, params, cmd.source_line, cmd.mnemonic))
+    # Emit in source order, interleaving direct commands and task/sub
+    # downloads. `prgm N` is a direct command that selects which program
+    # slot the *following* BeginOfTask writes into, so hoisting all the
+    # directs to the front would silently pile every task into whichever
+    # slot the last prgm named.
+    for kind, item in emit_order:
+        if kind == "direct":
+            cmd = item
+            opcode, params = assemble_line(cmd.mnemonic, cmd.args, nxt_compatible)
+            commands.append(Command(opcode, params, cmd.source_line, cmd.mnemonic))
+            continue
 
-    # Emit each task/sub block as BeginOfTask/Sub + chunked ContinueDL.
-    for block in blocks:
+        block = item
         body = bytearray()
         for cmd in block.body:
             opcode, params = assemble_line(cmd.mnemonic, cmd.args, nxt_compatible)

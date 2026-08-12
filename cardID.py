@@ -336,7 +336,7 @@ def log_card(uid, color, serial, listener, ui, state):
 def main(buttons=None):
     '''Tap cards until BtnA/BtnB ends the run.
 
-    Returns 'stop' or 'toggle', same convention as rcx.main() -- see
+    Returns 'stop' or 'toggle', same convention as RCXWand.main() -- see
     stick_menu.py. buttons=None builds its own Buttons(), for
     standalone use.
     '''
